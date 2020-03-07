@@ -9,6 +9,10 @@ import torch
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import torch.optim as optim
+import mxnet as mx
+import numpy as np
+import pickle
+import cv2
 NUM_EPOCH = 10
 
 def conv3x3(in_planes, out_planes, stride=1):
@@ -111,6 +115,31 @@ class CifarResNet(nn.Module):
 ####### Do not modify the code above this line #######
 ######################################################
 
+def extractImagesAndLabels(path, file):
+    f = open(path+file, 'rb')
+    dict = pickle.load(f, encoding='bytes')
+    # print('dict', dict)
+    images = dict[b'data']
+    # print('images', images)
+    images = np.reshape(images, (10000, 3, 32, 32))
+    labels = dict[b'labels']
+    imagearray = mx.nd.array(images)
+    labelarray = mx.nd.array(labels)
+    return imagearray, labelarray
+
+def extractCategories(path, file):
+    f = open(path+file, 'rb')
+    dict = pickle.load(f, encoding='bytes')
+    return dict[b'label_names']
+
+def saveCifarImage(array, path, file):
+    # array is 3x32x32. cv2 needs 32x32x3
+    array = array.asnumpy().transpose(1,2,0)
+    # array is RGB. cv2 needs BGR
+    array = cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+    # save to PNG file
+    return cv2.imwrite(path+file+".png", array)
+
 class cifar_resnet20(nn.Module):
     def __init__(self):
         super(cifar_resnet20, self).__init__()
@@ -129,29 +158,46 @@ class cifar_resnet20(nn.Module):
 
 
 
+def writeOutput2file(file, foutput): 
+    f = open(file, "w+")
+
+    for i in range(0, len(foutput)): 
+        row = foutput[i]
+        f.write(str(row) + '\n')
+
+
+
 if __name__ == '__main__':
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = cifar_resnet20()
+    model.to(device)
     transform = transforms.Compose([transforms.ToTensor(),
                                     transforms.Normalize(mean=(0.4914, 0.4822, 0.4465),
                                                          std=(0.2023, 0.1994, 0.2010))])
     trainset = datasets.CIFAR10('./data', download=True, transform=transform)
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
-                                          shuffle=True, num_workers=2)
+                                          shuffle=True, num_workers=4)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(list(model.fc.parameters()), lr=0.001, momentum=0.9)
     ## Do the training
+    testOutput = []
     for epoch in range(NUM_EPOCH):  # loop over the dataset multiple times
         running_loss = 0.0
         for i, data in enumerate(trainloader, 0):
             # get the inputs
             inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+
+
 
             # zero the parameter gradients
             optimizer.zero_grad()
 
             # forward + backward + optimize
             outputs = model(inputs)
+            npOutputs = outputs.cpu().detach().numpy()
+            testOutput.append(npOutputs[0].tolist())
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -161,3 +207,53 @@ if __name__ == '__main__':
                     (epoch + 1, i + 1, running_loss / 20))
                 running_loss = 0.0
     print('Finished Training')
+
+    #create test set and 
+    testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=1, shuffle=False, num_workers=2)
+    testOutput = []
+    for j, data in enumerate(testloader, 0):
+            # get the inputs
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+            if(j< 100):
+                print('labels', labels)
+
+
+
+            # zero the parameter gradients
+            optimizer.zero_grad()
+
+            # forward + backward + optimize
+            outputs = model(inputs)
+            npOutputs = outputs.cpu().detach().numpy()
+            if(j < 100):
+                testOutput.append(npOutputs[0])
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            if j % 20 == 19:    # print every 20 mini-batches
+                print('[%d, %5d] test loss: %.3f' %
+                    (epoch + 1, j + 1, running_loss / 20))
+                running_loss = 0.0
+
+    try:
+        writeOutput2file("results.txt", testOutput)
+    except:
+        print("fail to output results")
+    # loop through data set and create an image 
+    imgarray, lblarray = extractImagesAndLabels("data/cifar-10-batches-py/", "test_batch")
+    # print(imgarray.shape)
+    # print(lblarray.shape)
+
+    categories = extractCategories("data/cifar-10-batches-py/", "batches.meta")
+
+    cats = []
+    for i in range(0,100):
+        saveCifarImage(imgarray[i], "./", "image"+(str)(i))
+        # category = lblarray[i].asnumpy()
+        # category = (int)(category[0])
+        # cats.append(categories[category])
+
+
